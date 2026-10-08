@@ -1,0 +1,9 @@
+{
+  "credentials_file": "credentials.json",
+  "token_file": "token.json",
+  "delay_seconds": 4.0,
+  "jitter": 2.0,
+  "max_retries": 5,
+  "log_file": "Logs.csv",
+  "processed_dir": "processed_state"
+}

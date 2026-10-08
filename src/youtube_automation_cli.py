@@ -1,692 +1,608 @@
 #!/usr/bin/env python3
 """
-Complete YouTube automation: Like, Comment, Subscribe.
-A professional CLI tool for YouTube channel management.
+YouTube Automation Suite - Command Line Interface
+Automated batch interactions (Like, Comment, Subscribe) using the YouTube Data API v3.
 
-Author: Haseeb Kaloya
-Email: haseebkaloya@gmail.com
-Contact: +92 3294163702
-
-Requirements:
-  pip install google-auth google-auth-oauthlib google-api-python-client colorama
-
-Security / Ethics: Use only for accounts you control. Respect YouTube Terms of Service and quotas.
+Developer: Haseeb Kaloya
+Email: contact.haseebkaloya@gmail.com
+License: MIT
 """
+
+import argparse
+import csv
+import json
+import logging
 import os
+import random
+import re
 import sys
 import time
-import json
-import csv
-import random
-import shutil
-import logging
-import itertools
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Set
 
-# Google libs
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
-from colorama import Fore, Style
-# UI
-from colorama import init as colorama_init, Fore, Style
+try:
+    from colorama import Fore, Style, init as colorama_init
+    colorama_init(autoreset=True)
+except ImportError:
+    class _StyleFallback:
+        def __getattr__(self, _):
+            return ""
 
-# ---------- CONFIG DEFAULTS ----------
+    Fore = _StyleFallback()
+    Style = _StyleFallback()
+
+try:
+    from google.auth.transport.requests import Request
+    from google.oauth2.credentials import Credentials
+    from google_auth_oauthlib.flow import InstalledAppFlow
+    from googleapiclient.discovery import build
+    from googleapiclient.errors import HttpError
+    GOOGLE_API_AVAILABLE = True
+except ImportError:
+    GOOGLE_API_AVAILABLE = False
+    Request = Credentials = InstalledAppFlow = build = HttpError = None
+
+# ----------------- Configuration Defaults -----------------
 SCOPES = ["https://www.googleapis.com/auth/youtube.force-ssl"]
 DEFAULT_CREDENTIALS = "credentials.json"
 DEFAULT_TOKEN = "token.json"
-LOG_CSV = "Logs.csv"
-PROCESSED_DIR = "processed_state"
-DELAY_SECONDS = 4.0    # base delay between actions
-JITTER = 2.0           # +/- random jitter in seconds
-MAX_RETRIES = 6
+DEFAULT_LOG_CSV = "Logs.csv"
+DEFAULT_LOG_FILE = "youtube_automation.log"
+DEFAULT_PROCESSED_DIR = "processed_state"
+
+DEFAULT_DELAY_SECONDS = 4.0
+DEFAULT_JITTER = 2.0
+MAX_RETRIES = 5
 BASE_BACKOFF = 1.0
-BOX_MAX_WIDTH = 78
-# -------------------------------------
-
-colorama_init(autoreset=True)
-
-# Improved logging: file + console
-log_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-file_handler = logging.FileHandler(LOG_CSV, mode="a", encoding="utf-8")
-file_handler.setFormatter(log_formatter)
-console_handler = logging.StreamHandler()
-console_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)s | %(message)s"))
-logging.basicConfig(level=logging.INFO, handlers=[file_handler, console_handler])
-
-# ---------------- Utilities ----------------
 
 
-def clear():
-    try:
-        os.system("cls" if os.name == "nt" else "clear")
-    except Exception:
-        pass
+def setup_logging(log_file: str = DEFAULT_LOG_FILE) -> logging.Logger:
+    """Configures application-level file and console logging."""
+    logger = logging.getLogger("youtube_automation")
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
 
-def prompt(msg: str, default: Optional[str] = None) -> str:
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+
+    fh = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+    fh.setFormatter(formatter)
+    logger.addHandler(fh)
+
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+    logger.addHandler(ch)
+
+    return logger
+
+
+logger = setup_logging()
+
+
+# ----------------- Utility Functions -----------------
+def clear_screen() -> None:
+    """Clear terminal screen."""
+    os.system("cls" if os.name == "nt" else "clear")
+
+
+def print_banner() -> None:
+    """Display clean, professional application header."""
+    print(Fore.CYAN + Style.BRIGHT + "============================================================")
+    print(Fore.CYAN + Style.BRIGHT + "               YouTube Automation Suite v1.0.0              ")
+    print(Fore.CYAN + Style.BRIGHT + "============================================================")
+    print(Fore.WHITE + "Developer: Haseeb Kaloya | contact.haseebkaloya@gmail.com")
+    print(Fore.YELLOW + "Note: Operate only on accounts and targets you control.\n")
+
+
+def prompt_user(msg: str, default: Optional[str] = None) -> str:
+    """Read user prompt with optional default fallback."""
     try:
         if default:
             val = input(f"{msg} [{default}]: ").strip()
             return val if val != "" else default
         return input(f"{msg}: ").strip()
-    except EOFError:
-        return default if default is not None else ""
+    except (EOFError, KeyboardInterrupt):
+        print()
+        sys.exit(0)
 
-def ensure_dir(path):
+
+def ensure_directory(path: str) -> None:
+    """Ensure directory exists on disk."""
     os.makedirs(path, exist_ok=True)
 
-def timestamp():
+
+def current_timestamp() -> str:
+    """Format current ISO timestamp."""
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
-def write_log(action, target_id, status, note=""):
-    header_needed = not os.path.exists(LOG_CSV) or os.path.getsize(LOG_CSV) == 0
-    with open(LOG_CSV, "a", newline="", encoding="utf-8") as f:
-        w = csv.writer(f)
+
+def write_csv_log(log_path: str, action: str, target_id: str, status: str, note: str = "") -> None:
+    """Write structured execution records to CSV."""
+    header_needed = not os.path.exists(log_path) or os.path.getsize(log_path) == 0
+    with open(log_path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
         if header_needed:
-            w.writerow(["timestamp", "action", "target_id", "status", "note"])
-        w.writerow([timestamp(), action, target_id, status, note])
+            writer.writerow(["timestamp", "action", "target_id", "status", "note"])
+        writer.writerow([current_timestamp(), action, target_id, status, note])
 
-def save_processed(action, processed_set):
-    ensure_dir(PROCESSED_DIR)
-    with open(os.path.join(PROCESSED_DIR, f"processed_{action}.json"), "w", encoding="utf-8") as f:
-        json.dump(list(processed_set), f, indent=2)
 
-def load_processed(action):
-    ensure_dir(PROCESSED_DIR)
-    p = os.path.join(PROCESSED_DIR, f"processed_{action}.json")
-    if os.path.exists(p):
+def load_processed_state(action: str, state_dir: str = DEFAULT_PROCESSED_DIR) -> Set[str]:
+    """Load previously processed item identifiers to avoid duplicate work."""
+    ensure_directory(state_dir)
+    file_path = os.path.join(state_dir, f"processed_{action}.json")
+    if os.path.exists(file_path):
         try:
-            with open(p, "r", encoding="utf-8") as f:
+            with open(file_path, "r", encoding="utf-8") as f:
                 return set(json.load(f))
-        except Exception:
+        except Exception as e:
+            logger.warning("Could not read state file %s: %s", file_path, e)
             return set()
     return set()
 
-# ---------- Channel resolver ----------
+
+def save_processed_state(action: str, processed_set: Set[str], state_dir: str = DEFAULT_PROCESSED_DIR) -> None:
+    """Save processed item identifiers to disk."""
+    ensure_directory(state_dir)
+    file_path = os.path.join(state_dir, f"processed_{action}.json")
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(sorted(list(processed_set)), f, indent=2)
+    except Exception as e:
+        logger.error("Failed to save state file %s: %s", file_path, e)
+
+
+# ----------------- Identifier Extractors -----------------
+def extract_video_id(input_str: str) -> Optional[str]:
+    """
+    Extracts an 11-character YouTube video ID from direct IDs, watch URLs,
+    shortened youtu.be URLs, shorts, or embed URLs.
+    """
+    if not input_str:
+        return None
+    s = input_str.strip()
+    if re.fullmatch(r"[A-Za-z0-9_-]{11}", s):
+        return s
+    m = re.search(r"(?:v=|/v/|youtu\.be/|/embed/|/shorts/)([A-Za-z0-9_-]{11})", s)
+    if m:
+        return m.group(1)
+    return None
+
+
+def extract_channel_id(input_str: str) -> Optional[str]:
+    """Extract direct UC channel ID from URL or bare string."""
+    if not input_str:
+        return None
+    s = input_str.strip()
+    m = re.search(r"youtube\.com/(?:channel/)(UC[0-9A-Za-z_-]{20,})", s)
+    if m:
+        return m.group(1)
+    if s.startswith("UC") and len(s) >= 22:
+        return s
+    return None
+
+
 def resolve_channel_id(youtube, input_str: str) -> Optional[str]:
     """
-    Accepts channel URL, handle (@username), or UC ID and returns the actual channelId.
-    Returns None if not found.
+    Resolves a channel URL, @handle, or search term into a canonical UC channel ID.
     """
-    import re
-
     if not input_str:
         return None
     s = input_str.strip()
 
-    # Direct channel ID (very tolerant)
-    m = re.search(r"(UC[A-Za-z0-9_-]{16,})", s)
-    if m:
-        return m.group(1)
+    direct_id = extract_channel_id(s)
+    if direct_id:
+        return direct_id
 
-    # Try to extract handle like @handle
+    # Handle @username
     m = re.search(r"@([A-Za-z0-9_\.]+)", s)
     if m:
         handle = m.group(1)
-        # preferred: channels().list(forHandle=handle) (supported by API)
         try:
             resp = youtube.channels().list(part="id", forHandle=handle).execute()
             items = resp.get("items", [])
             if items:
                 return items[0].get("id")
         except HttpError:
-            # fallback to search if forHandle fails
             pass
         except Exception as e:
-            logging.warning("resolve_channel_id: forHandle failed for %s: %s", handle, e)
+            logger.debug("forHandle failed for %s: %s", handle, e)
 
-        # fallback to search
+        # Fallback to search by handle
         try:
             resp = youtube.search().list(part="snippet", q=handle, type="channel", maxResults=1).execute()
             items = resp.get("items", [])
             if items:
                 return items[0]["snippet"].get("channelId")
         except Exception as e:
-            logging.warning("resolve_channel_id: search fallback failed for %s: %s", handle, e)
+            logger.debug("search fallback failed for %s: %s", handle, e)
         return None
 
-    # Generic search for other patterns (custom URLs, /user/, /c/, or plain names)
+    # Generic search for query string
     try:
         resp = youtube.search().list(part="snippet", q=s, type="channel", maxResults=1).execute()
         items = resp.get("items", [])
         if items:
             return items[0]["snippet"].get("channelId")
     except Exception as e:
-        logging.warning("resolve_channel_id: generic search failed for %s: %s", s, e)
+        logger.debug("Generic channel search failed for %s: %s", s, e)
 
     return None
 
-# ---------- Video / Channel extractors ----------
-def extract_video_id_from_url(s: str) -> Optional[str]:
-    if not s:
-        return None
-    s = s.strip()
-    import re
-    if re.fullmatch(r"[A-Za-z0-9_-]{11}", s):
-        return s
-    m = re.search(r"(?:v=|/v/|youtu\.be/|/embed/)([A-Za-z0-9_-]{11})", s)
-    if m:
-        return m.group(1)
-    if s.startswith("http"):
-        parts = s.rstrip("/").split("/")
-        candidate = parts[-1]
-        if re.fullmatch(r"[A-Za-z0-9_-]{11}", candidate):
-            return candidate
-    return None
 
-def extract_channel_id_from_url(s: str) -> Optional[str]:
-    if not s:
-        return None
-    s = s.strip()
-    import re
-    m = re.search(r"youtube\.com/(?:channel/)(UC[0-9A-Za-z_-]+)", s)
-    if m:
-        return m.group(1)
-    # Accept plain UC id
-    if s.startswith("UC") and len(s) > 10:
-        return s
-    return None
-
-# ---------- Google Auth helpers ----------
-def load_or_create_credentials(credentials_path: str, token_path: str, scopes=SCOPES):
+# ----------------- Authentication & API -----------------
+def get_authenticated_service(credentials_path: str = DEFAULT_CREDENTIALS, token_path: str = DEFAULT_TOKEN):
+    """
+    Handles OAuth 2.0 flow, loads cached tokens, refreshes if expired,
+    or triggers browser consent if needed.
+    """
+    if not GOOGLE_API_AVAILABLE:
+        raise ImportError(
+            "Missing required Google client libraries. Please install them with:\n"
+            "pip install google-auth google-auth-oauthlib google-api-python-client"
+        )
     creds = None
     if os.path.exists(token_path):
         try:
-            creds = Credentials.from_authorized_user_file(token_path, scopes)
+            creds = Credentials.from_authorized_user_file(token_path, SCOPES)
         except Exception as e:
-            logging.warning("Failed to load token file (%s): %s", token_path, e)
+            logger.warning("Could not read token file (%s): %s", token_path, e)
             creds = None
 
-    # refresh if possible
     if creds and creds.expired and creds.refresh_token:
         try:
             creds.refresh(Request())
-            # save refreshed token
             with open(token_path, "w", encoding="utf-8") as f:
                 f.write(creds.to_json())
         except Exception as e:
-            logging.warning("Refresh failed: %s", e)
+            logger.warning("Token refresh failed: %s", e)
             creds = None
 
     if not creds or not creds.valid:
         if not os.path.exists(credentials_path):
-            logging.error("Missing credentials.json file at %s", credentials_path)
-            raise FileNotFoundError(f"Missing {credentials_path}")
-        flow = InstalledAppFlow.from_client_secrets_file(credentials_path, scopes)
+            raise FileNotFoundError(
+                f"Missing OAuth client secret file at '{credentials_path}'. "
+                f"Download credentials.json from Google Cloud Console and place it in the project root."
+            )
+        flow = InstalledAppFlow.from_client_secrets_file(credentials_path, SCOPES)
         creds = flow.run_local_server(port=0, prompt="consent", authorization_prompt_message="")
         with open(token_path, "w", encoding="utf-8") as f:
             f.write(creds.to_json())
-        logging.info("Saved new token to %s", token_path)
+        logger.info("Saved authentication token to %s", token_path)
 
-    return creds
-
-def build_youtube_service(creds):
     return build("youtube", "v3", credentials=creds, cache_discovery=False)
 
-# ---------- Backoff wrapper ----------
-def with_exponential_backoff(fn, *args, max_retries=MAX_RETRIES, **kwargs):
+
+def call_with_backoff(fn, *args, max_retries: int = MAX_RETRIES, **kwargs):
+    """Executes a callable with exponential backoff on retryable HTTP errors."""
     attempt = 0
     while True:
         try:
             return fn(*args, **kwargs)
         except HttpError as e:
-            status = None
-            try:
-                status = int(e.resp.status)
-            except Exception:
-                pass
-            # retry for 5xx, 429, 403 (quota/rate) - conservative
-            if status in (429, 403) or (status and 500 <= status < 600):
+            status = getattr(e.resp, "status", None)
+            if status:
+                try:
+                    status = int(status)
+                except ValueError:
+                    pass
+            # Retry on rate limit (429), quota lock (403), or server errors (5xx)
+            if status in (429, 403) or (isinstance(status, int) and 500 <= status < 600):
                 attempt += 1
                 if attempt > max_retries:
                     raise
-                sleep_time = BASE_BACKOFF * (2 ** (attempt - 1)) + random.random()
-                logging.warning("HTTP %s — backing off %.1fs (attempt %d/%d)", status, sleep_time, attempt, max_retries)
-                time.sleep(sleep_time)
+                wait_time = BASE_BACKOFF * (2 ** (attempt - 1)) + random.uniform(0.5, 1.5)
+                logger.warning("HTTP %s encountered. Backing off for %.2fs (attempt %d/%d)", status, wait_time, attempt, max_retries)
+                time.sleep(wait_time)
                 continue
-            else:
-                # non-retryable
-                raise
+            raise
         except Exception as e:
             attempt += 1
             if attempt > max_retries:
                 raise
-            sleep_time = BASE_BACKOFF * (2 ** (attempt - 1)) + random.random()
-            logging.warning("Error: %s — retrying in %.1fs (attempt %d/%d)", e, sleep_time, attempt, max_retries)
-            time.sleep(sleep_time)
+            wait_time = BASE_BACKOFF * (2 ** (attempt - 1)) + random.uniform(0.5, 1.5)
+            logger.warning("Request error: %s. Retrying in %.2fs (attempt %d/%d)", e, wait_time, attempt, max_retries)
+            time.sleep(wait_time)
 
-# ---------- Core actions ----------
-def like_video(youtube, video_id: str):
-    def _call():
-        return youtube.videos().rate(id=video_id, rating="like").execute()
-    with_exponential_backoff(_call)
-    return True
 
-def subscribe_channel(youtube, channel_id: str):
-    body = {"snippet": {"resourceId": {"kind": "youtube#channel", "channelId": channel_id}}}
-    def _call():
-        return youtube.subscriptions().insert(part="snippet", body=body).execute()
-    resp = with_exponential_backoff(_call)
-    return resp
-
-def post_top_level_comment(youtube, video_id: str, text: str):
-    body = {
-        "snippet": {
-            "videoId": video_id,
-            "topLevelComment": {"snippet": {"textOriginal": text}}
-        }
-    }
-    def _call():
-        return youtube.commentThreads().insert(part="snippet", body=body).execute()
-    resp = with_exponential_backoff(_call)
-    return resp
-
-# ---------- Input parsers ----------
-def read_video_ids_from_file(path: str) -> List[str]:
-    p = Path(path)
-    if not p.exists():
-        raise FileNotFoundError(path)
-    vids = []
-    with p.open("r", encoding="utf-8") as f:
+# ----------------- Input Parsers -----------------
+def parse_video_ids_file(file_path: str) -> List[str]:
+    """Parse and deduplicate video IDs from input file."""
+    path = Path(file_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Input file not found: {file_path}")
+    vids, seen = [], set()
+    with path.open("r", encoding="utf-8") as f:
         for line in f:
-            s = line.strip()
-            if not s:
+            raw = line.strip()
+            if not raw:
                 continue
-            vid = extract_video_id_from_url(s)
-            if vid:
+            vid = extract_video_id(raw)
+            if vid and vid not in seen:
+                seen.add(vid)
                 vids.append(vid)
-            else:
-                logging.warning("Skipping invalid video entry: %s", s)
-    # dedupe preserve order
-    seen = set()
-    out = []
-    for v in vids:
-        if v not in seen:
-            seen.add(v)
-            out.append(v)
-    return out
+            elif not vid:
+                logger.warning("Skipping invalid video entry: %s", raw)
+    return vids
 
-def read_comments_from_file(path: str, max_comments=1000) -> List[str]:
-    p = Path(path)
-    if not p.exists():
-        raise FileNotFoundError(path)
+
+def parse_comments_file(file_path: str) -> List[str]:
+    """Parse comments from input file."""
+    path = Path(file_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Input file not found: {file_path}")
     comments = []
-    with p.open("r", encoding="utf-8") as f:
+    with path.open("r", encoding="utf-8") as f:
         for line in f:
-            t = line.strip()
-            if t:
-                comments.append(t)
-            if len(comments) >= max_comments:
-                break
+            raw = line.strip()
+            if raw:
+                comments.append(raw)
     return comments
 
-def read_channel_ids_from_file(path: str, youtube) -> List[str]:
-    p = Path(path)
-    if not p.exists():
-        raise FileNotFoundError(path)
-    chs = []
-    with p.open("r", encoding="utf-8") as f:
-        for raw_line in f:
-            s = raw_line.strip()
-            if not s:
+
+def parse_channel_ids_file(file_path: str, youtube) -> List[str]:
+    """Parse and resolve channel identifiers from input file."""
+    path = Path(file_path)
+    if not path.is_file():
+        raise FileNotFoundError(f"Input file not found: {file_path}")
+    channels, seen = [], set()
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            raw = line.strip()
+            if not raw:
+                continue
+            cid = resolve_channel_id(youtube, raw)
+            if cid and cid not in seen:
+                seen.add(cid)
+                channels.append(cid)
+                logger.info("Resolved '%s' -> %s", raw, cid)
+            elif not cid:
+                logger.warning("Could not resolve channel entry: %s", raw)
+    return channels
+
+
+# ----------------- Action Runners -----------------
+def run_likes(youtube, input_file: str, delay: float, jitter: float, log_csv: str = DEFAULT_LOG_CSV) -> int:
+    """Executes automated video likes."""
+    video_ids = parse_video_ids_file(input_file)
+    processed = load_processed_state("like")
+    logger.info("Found %d video(s) to process. (%d already processed)", len(video_ids), len(processed))
+
+    success_count = 0
+    try:
+        for idx, vid in enumerate(video_ids, start=1):
+            if vid in processed:
+                logger.info("[%d/%d] Skipping already liked video: %s", idx, len(video_ids), vid)
                 continue
 
-            # Try direct extraction from URL (fast)
-            cid = extract_channel_id_from_url(s)
+            logger.info("[%d/%d] Liking video: %s", idx, len(video_ids), vid)
+            try:
+                call_with_backoff(lambda: youtube.videos().rate(id=vid, rating="like").execute())
+                write_csv_log(log_csv, "like", vid, "success", "")
+                processed.add(vid)
+                save_processed_state("like", processed)
+                success_count += 1
+                logger.info("Successfully liked video: %s", vid)
+            except HttpError as e:
+                code = getattr(e.resp, "status", "Error")
+                logger.error("HTTP error liking %s: %s", vid, code)
+                write_csv_log(log_csv, "like", vid, "failed", f"HTTP {code}")
+            except Exception as e:
+                logger.error("Error liking %s: %s", vid, e)
+                write_csv_log(log_csv, "like", vid, "failed", str(e))
 
-            # If not found, try resolving with API
-            if not cid:
-                cid = resolve_channel_id(youtube, s)
+            sleep_duration = max(0.5, delay + random.uniform(-jitter, jitter))
+            time.sleep(sleep_duration)
+    finally:
+        save_processed_state("like", processed)
 
-            if cid:
-                chs.append(cid)
-                logging.info("Resolved %s → %s", s, cid)
-            else:
-                logging.warning("Skipping unrecognized or invalid channel entry: %s", s)
+    return success_count
 
-    # dedupe preserve order
-    seen = set()
-    out = []
-    for c in chs:
-        if c not in seen:
-            seen.add(c)
-            out.append(c)
-    return out
 
-# ---------- Runner flows ----------
-def run_likes(youtube, path, processed):
-    video_ids = read_video_ids_from_file(path)
-    logging.info("Found %d unique videos to like", len(video_ids))
-    for idx, vid in enumerate(video_ids, start=1):
-        if vid in processed:
-            logging.info("[%d/%d] Skipping already-processed like: %s", idx, len(video_ids), vid)
-            continue
-        logging.info("[%d/%d] Liking video: %s", idx, len(video_ids), vid)
-        try:
-            like_video(youtube, vid)
-            write_log("like", vid, "success", "")
-            processed.add(vid)
-            save_processed("like", processed)
-            logging.info("Liked: %s", vid)
-        except HttpError as e:
-            code = getattr(e.resp, "status", "N/A")
-            logging.error("HTTP error liking %s: %s", vid, code)
-            write_log("like", vid, "failed", f"HTTP {code}")
-        except Exception as e:
-            logging.exception("Error liking %s: %s", vid, e)
-            write_log("like", vid, "failed", str(e))
-        # polite delay
-        time.sleep(max(0, DELAY_SECONDS + random.uniform(-JITTER, JITTER)))
+def run_subscribes(youtube, input_file: str, delay: float, jitter: float, log_csv: str = DEFAULT_LOG_CSV) -> int:
+    """Executes automated channel subscriptions."""
+    channel_ids = parse_channel_ids_file(input_file, youtube)
+    processed = load_processed_state("subscribe")
+    logger.info("Found %d channel(s) to process. (%d already processed)", len(channel_ids), len(processed))
 
-def run_subscribes(youtube, path, processed):
-    ch_ids = read_channel_ids_from_file(path, youtube)
-    logging.info("Found %d unique channels to subscribe", len(ch_ids))
-    for idx, cid in enumerate(ch_ids, start=1):
-        if cid in processed:
-            logging.info("[%d/%d] Skipping already-processed subscribe: %s", idx, len(ch_ids), cid)
-            continue
-        logging.info("[%d/%d] Subscribing to channel: %s", idx, len(ch_ids), cid)
-        try:
-            resp = subscribe_channel(youtube, cid)
-            sub_id = resp.get("id") if isinstance(resp, dict) else ""
-            write_log("subscribe", cid, "success", str(sub_id))
-            processed.add(cid)
-            save_processed("subscribe", processed)
-            logging.info("Subscribed: %s", cid)
-        except HttpError as e:
-            status = getattr(e.resp, "status", "N/A")
-            # Specific handling for abuse/quota could be added here
-            logging.error("HTTP error subscribing %s: %s", cid, status)
-            write_log("subscribe", cid, "failed", f"HTTP {status}")
-        except Exception as e:
-            logging.exception("Error subscribing %s: %s", cid, e)
-            write_log("subscribe", cid, "failed", str(e))
-        time.sleep(max(0, DELAY_SECONDS + random.uniform(-JITTER, JITTER)))
+    success_count = 0
+    try:
+        for idx, cid in enumerate(channel_ids, start=1):
+            if cid in processed:
+                logger.info("[%d/%d] Skipping already subscribed channel: %s", idx, len(channel_ids), cid)
+                continue
 
-def run_comments(youtube, path, processed, max_comments_per_run=None):
-    comments = read_comments_from_file(path)
-    if max_comments_per_run:
-        comments = comments[:max_comments_per_run]
-    logging.info("Loaded %d comments", len(comments))
-    target_video = prompt("Enter target video URL or ID to post comments to")
-    vid = extract_video_id_from_url(target_video)
+            logger.info("[%d/%d] Subscribing to channel: %s", idx, len(channel_ids), cid)
+            try:
+                body = {"snippet": {"resourceId": {"kind": "youtube#channel", "channelId": cid}}}
+                resp = call_with_backoff(lambda: youtube.subscriptions().insert(part="snippet", body=body).execute())
+                sub_id = resp.get("id", "") if isinstance(resp, dict) else ""
+                write_csv_log(log_csv, "subscribe", cid, "success", str(sub_id))
+                processed.add(cid)
+                save_processed_state("subscribe", processed)
+                success_count += 1
+                logger.info("Successfully subscribed to channel: %s", cid)
+            except HttpError as e:
+                code = getattr(e.resp, "status", "Error")
+                logger.error("HTTP error subscribing to %s: %s", cid, code)
+                write_csv_log(log_csv, "subscribe", cid, "failed", f"HTTP {code}")
+            except Exception as e:
+                logger.error("Error subscribing to %s: %s", cid, e)
+                write_csv_log(log_csv, "subscribe", cid, "failed", str(e))
+
+            sleep_duration = max(0.5, delay + random.uniform(-jitter, jitter))
+            time.sleep(sleep_duration)
+    finally:
+        save_processed_state("subscribe", processed)
+
+    return success_count
+
+
+def run_comments(youtube, input_file: str, target_video: str, delay: float, jitter: float, log_csv: str = DEFAULT_LOG_CSV) -> int:
+    """Executes automated comment posting."""
+    vid = extract_video_id(target_video)
     if not vid:
-        logging.error("Could not extract video id from provided target.")
-        raise ValueError("Invalid target video")
-    logging.info("Posting comments to video id: %s", vid)
-    for idx, c in enumerate(comments, start=1):
-        key = f"{vid}::{hash(c)}"
-        if key in processed:
-            logging.info("[%d/%d] Skipping already-posted comment (dedup): %.60s", idx, len(comments), c)
-            continue
-        logging.info("[%d/%d] Posting comment: %.80s", idx, len(comments), c)
-        try:
-            resp = post_top_level_comment(youtube, vid, c)
-            comment_id = resp.get("id") if isinstance(resp, dict) else ""
-            write_log("comment", vid, "success", comment_id)
-            processed.add(key)
-            save_processed("comment", processed)
-            logging.info("Posted comment id: %s", comment_id)
-        except HttpError as e:
-            code = getattr(e.resp, "status", "N/A")
-            logging.error("HTTP error posting comment: %s", code)
-            write_log("comment", vid, "failed", f"HTTP {code}")
-        except Exception as e:
-            logging.exception("Error posting comment: %s", e)
-            write_log("comment", vid, "failed", str(e))
-        time.sleep(max(0, DELAY_SECONDS + random.uniform(-JITTER, JITTER)))
+        raise ValueError(f"Invalid target video identifier: {target_video}")
 
+    comments = parse_comments_file(input_file)
+    processed = load_processed_state("comment")
+    logger.info("Posting %d comment(s) to video %s", len(comments), vid)
 
-#	------------------------------>Welcome Screen<--------------------------------------------
-
-
-try:
-    from colorama import init, Fore, Style
-except Exception as e:
-    print("Missing dependency: colorama. Install with: pip install colorama")
-    raise
-
-try:
-    import pyfiglet
-    PYFIGLET_AVAILABLE = True
-except Exception:
-    PYFIGLET_AVAILABLE = False
-
-# Initialize colorama
-init(autoreset=True)
-
-# ------------------ Configuration ------------------
-BRAND = "YouTube Automation Suite"
-AUTHOR = "Community Project"
-TAGLINE = "Professional YouTube Management Tool"
-TELEGRAM_LINK = "#"      # Optional: Add your contact link
-WHATSAPP_LINK = "#"       # Optional: Add your contact link
-ANIMATION_SPEED = 0.0018   # lower -> faster; raise if your CPU jumps
-BOX_MAX_WIDTH = 78         # maximum width for the info box
-# ---------------------------------------------------
-
-def clear():
-    os.system("cls" if os.name == "nt" else "clear")
-
-def get_terminal_width(fallback=80):
+    success_count = 0
     try:
-        return shutil.get_terminal_size().columns
-    except Exception:
-        return fallback
+        for idx, text in enumerate(comments, start=1):
+            item_key = f"{vid}::{hash(text)}"
+            if item_key in processed:
+                logger.info("[%d/%d] Skipping duplicate comment: %.50s...", idx, len(comments), text)
+                continue
 
-def center_text(text, width):
-    lines = text.splitlines() or [text]
-    return "\n".join(line.center(width) for line in lines)
+            logger.info("[%d/%d] Posting comment: %.60s...", idx, len(comments), text)
+            try:
+                body = {
+                    "snippet": {
+                        "videoId": vid,
+                        "topLevelComment": {"snippet": {"textOriginal": text}},
+                    }
+                }
+                resp = call_with_backoff(lambda: youtube.commentThreads().insert(part="snippet", body=body).execute())
+                comment_id = resp.get("id", "") if isinstance(resp, dict) else ""
+                write_csv_log(log_csv, "comment", vid, "success", comment_id)
+                processed.add(item_key)
+                save_processed_state("comment", processed)
+                success_count += 1
+                logger.info("Comment posted successfully (id: %s)", comment_id)
+            except HttpError as e:
+                code = getattr(e.resp, "status", "Error")
+                logger.error("HTTP error posting comment on %s: %s", vid, code)
+                write_csv_log(log_csv, "comment", vid, "failed", f"HTTP {code}")
+            except Exception as e:
+                logger.error("Error posting comment on %s: %s", vid, e)
+                write_csv_log(log_csv, "comment", vid, "failed", str(e))
 
-def rainbow_cycle_iter():
-    """Return an infinite iterator cycling through chosen colors."""
-    colors = [Fore.GREEN + Style.BRIGHT, Fore.CYAN + Style.BRIGHT, Fore.MAGENTA + Style.BRIGHT, Fore.WHITE + Style.BRIGHT]
-    return itertools.cycle(colors)
-
-def animate_print(text, delay=ANIMATION_SPEED):
-    """Print text character-by-character using an infinite color cycle."""
-    color_iter = rainbow_cycle_iter()
-    try:
-        for ch in text:
-            color = next(color_iter)
-            # Avoid coloring newline characters to keep layout predictable
-            if ch == "\n":
-                sys.stdout.write(ch)
-            else:
-                sys.stdout.write(color + ch)
-            sys.stdout.flush()
-            time.sleep(delay)
-    except KeyboardInterrupt:
-        # Allow user to abort animation gracefully
-        print(Style.RESET_ALL + "\n[Animation interrupted]")
-        raise
+            sleep_duration = max(0.5, delay + random.uniform(-jitter, jitter))
+            time.sleep(sleep_duration)
     finally:
-        # Reset styles after animation
-        print(Style.RESET_ALL, end="")
+        save_processed_state("comment", processed)
 
-def boxed_info(lines, box_width=None):
-    """Return a string with lines enclosed in a Unicode box."""
-    if not lines:
-        return ""
-    content_width = max(len(l) for l in lines)
-    if box_width is None:
-        box_width = min(max(content_width + 4, 20), BOX_MAX_WIDTH)
-    # Ensure box_width is wide enough for content
-    inner_width = box_width - 4
-    top = "╔" + "═" * (box_width - 2) + "╗"
-    bot = "╚" + "═" * (box_width - 2) + "╝"
-    body_lines = []
-    for l in lines:
-        # truncate if too long
-        display = l if len(l) <= inner_width else l[:inner_width - 3] + "..."
-        body_lines.append("║ " + display.ljust(inner_width) + " ║")
-    return "\n".join([top] + body_lines + [bot])
-
-def load_logo_text(brand, font="slant"):
-    """Generate ASCII art logo; fallback to plain text if pyfiglet not available."""
-    if PYFIGLET_AVAILABLE:
-        try:
-            return pyfiglet.figlet_format(brand, font=font)
-        except Exception:
-            # Font might not exist on some systems
-            return pyfiglet.figlet_format(brand)
-    else:
-        # Simple stylized fallback
-        return f"=== {brand} ===\n"
-
-def scanning_bar(width, length=40, speed=0.01):
-    """Simple scanning bar animation centered."""
-    length = min(length, max(10, width - 20))
-    for i in range(length + 1):
-        left = "[" + "=" * i + " " * (length - i) + "]"
-        sys.stdout.write(Fore.GREEN + left.center(width) + "\r")
-        sys.stdout.flush()
-        time.sleep(speed)
-    print()  # newline after bar
-#theme functions end
+    return success_count
 
 
-def main():
-#theme main function start
+# ----------------- CLI Dispatcher -----------------
+def parse_arguments() -> argparse.Namespace:
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="YouTube Automation Suite - CLI bulk like, comment, and subscribe tool.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  python -m src.youtube_automation_cli --action like --file examples/likes.txt\n"
+            "  python -m src.youtube_automation_cli --action subscribe --file examples/channels.txt\n"
+            "  python -m src.youtube_automation_cli --action comment --file examples/comments.txt --video <VIDEO_ID>\n"
+            "  python -m src.youtube_automation_cli  # Launches interactive wizard\n"
+        ),
+    )
+    parser.add_argument("--action", choices=["like", "comment", "subscribe", "all"], help="Automation action to run")
+    parser.add_argument("--file", help="Path to input text file")
+    parser.add_argument("--video", help="Target video ID or URL (required when action is 'comment')")
+    parser.add_argument("--credentials", default=DEFAULT_CREDENTIALS, help="Path to OAuth credentials.json")
+    parser.add_argument("--token", default=DEFAULT_TOKEN, help="Path to token.json")
+    parser.add_argument("--delay", type=float, default=DEFAULT_DELAY_SECONDS, help="Base delay between actions (seconds)")
+    parser.add_argument("--jitter", type=float, default=DEFAULT_JITTER, help="Random jitter (+/- seconds)")
+    parser.add_argument("--log-csv", default=DEFAULT_LOG_CSV, help="Path to CSV execution log")
+    return parser.parse_args()
+
+
+def interactive_wizard() -> None:
+    """Interactive wizard for user-guided automation setup."""
+    clear_screen()
+    print_banner()
+
+    print("Choose action:")
+    print("  [1] like       - Bulk like videos")
+    print("  [2] comment    - Post comments to a video")
+    print("  [3] subscribe  - Bulk subscribe to channels")
+    print("  [4] all        - Run all three actions in sequence")
+    choice = prompt_user("Select option [1-4 or name]", "1").lower()
+
+    action_map = {"1": "like", "2": "comment", "3": "subscribe", "4": "all"}
+    chosen_action = action_map.get(choice, choice)
+
+    creds_path = prompt_user("Path to credentials.json", DEFAULT_CREDENTIALS)
+    token_path = prompt_user("Path to token.json", DEFAULT_TOKEN)
+
     try:
-        clear()
-        width = get_terminal_width()
+        delay = float(prompt_user("Base delay in seconds", str(DEFAULT_DELAY_SECONDS)))
+        jitter = float(prompt_user("Jitter in seconds", str(DEFAULT_JITTER)))
+    except ValueError:
+        delay, jitter = DEFAULT_DELAY_SECONDS, DEFAULT_JITTER
 
-        # small safeguard: ensure width not too small
-        if width < 40:
-            width = 40
-
-        # Scanning prelude
-        scanning_bar(width, length=min(60, width - 20), speed=0.008)
-
-        # Load & center logo
-        logo_text = load_logo_text(BRAND)
-        centered_logo = center_text(logo_text, width)
-
-        # Animated logo print
-        animate_print(centered_logo, delay=ANIMATION_SPEED)
-
-        # Tagline
-        print(Fore.CYAN + Style.BRIGHT + TAGLINE.center(width) + Style.RESET_ALL)
-        print()
-
-        # Info box
-        info_lines = [
-            f"Author  : {AUTHOR}",
-            f"Brand   : {BRAND}",
-            f"Telegram: {TELEGRAM_LINK}",
-            f"WhatsApp: {WHATSAPP_LINK}",
-        ]
-        # Choose box width relative to terminal width
-        desired_box_width = min(BOX_MAX_WIDTH, max(len(max(info_lines, key=len)) + 6, 40), width - 4)
-        box_str = boxed_info(info_lines, box_width=desired_box_width)
-        # Color the box green and center it
-        box_lines = box_str.splitlines()
-        for line in box_lines:
-            print(Fore.GREEN + line.center(width))
-
-        print()
-
-        # Ready animation
-        ready_msg = "INITIALIZING MODULES"
-        for dots in range(4):
-            sys.stdout.write(Fore.YELLOW + Style.BRIGHT + (ready_msg + "." * dots).center(width) + "\r")
-            sys.stdout.flush()
-            time.sleep(0.5)
-        print()
-        print(Fore.GREEN + Style.BRIGHT + ("✅  READY — " + BRAND).center(width))
-        print()
-
-    except KeyboardInterrupt:
-        print("\n" + Fore.RED + "Interrupted by user." + Style.RESET_ALL)
+    try:
+        youtube = get_authenticated_service(creds_path, token_path)
+    except Exception as e:
+        print(Fore.RED + f"\nAuthentication failed: {e}")
         sys.exit(1)
-#theme main function end
-    print(Fore.YELLOW + Style.BRIGHT + "⚠️  IMPORTANT — USE RESPONSIBLY  ⚠️")
-    print(Fore.MAGENTA + "Only operate on accounts you control. Unauthorized or abusive automation can violate YouTube's policies.")
-    actions_raw = prompt("✨ What would you like the bot to do today? ✨"
-  "\n🎯 Choose your action:\n"
-    "   💖  like       →  Auto-like videos\n"
-    "   💬  comment    →  Post smart comments\n"
-    "   📢  subscribe  →  Subscribe to target channels\n"
-    "   🌟  all        →  Perform every action\n\n"
-    "✏️  Enter your choice [like] , [comment] , [subscribe] , [all] -->"
-).strip().lower()
-    if actions_raw == "all":
-        chosen = ["like", "comment", "subscribe"]
-    else:
-        chosen = [a.strip() for a in actions_raw.split(",") if a.strip() in ("like", "comment", "subscribe")]
-    if not chosen:
-        print(Fore.RED + "No valid actions chosen. Exiting.")
+
+    print(Fore.GREEN + "\nAuthentication successful. Starting selected tasks...\n")
+
+    if chosen_action in ("like", "all"):
+        fpath = prompt_user("Path to likes.txt", "examples/likes.txt")
+        run_likes(youtube, fpath, delay, jitter)
+
+    if chosen_action in ("subscribe", "all"):
+        fpath = prompt_user("Path to channels.txt", "examples/channels.txt")
+        run_subscribes(youtube, fpath, delay, jitter)
+
+    if chosen_action in ("comment", "all"):
+        fpath = prompt_user("Path to comments.txt", "examples/comments.txt")
+        target_vid = prompt_user("Target video ID or URL")
+        run_comments(youtube, fpath, target_vid, delay, jitter)
+
+    print(Fore.GREEN + f"\nAll operations completed. Records saved to {DEFAULT_LOG_CSV}.")
+
+
+def main() -> None:
+    """Main CLI entrypoint."""
+    args = parse_arguments()
+
+    # If no flags passed, launch interactive wizard
+    if not args.action:
+        interactive_wizard()
         return
 
-    # Credentials/token paths
-    credentials_path = prompt("Path to credentials.json", DEFAULT_CREDENTIALS)
-    token_path = prompt("Path to token.json (will be created if missing)", DEFAULT_TOKEN)
-
-    # Gather file paths for selected actions
-    likes_path = comments_path = subs_path = None
-    if "like" in chosen:
-        likes_path = prompt("Path to Likes.txt (video ids or URLs)")
-    if "comment" in chosen:
-        comments_path = prompt("Path to Comments.txt (one comment per line)")
-    if "subscribe" in chosen:
-        subs_path = prompt("Path to Channels.txt (channel ids or URLs)")
-
-    # Ask for pacing — FIXED global variable section
-    global DELAY_SECONDS, JITTER
-    nonlocal_delay = prompt("Base delay in seconds between actions (float)", str(DELAY_SECONDS))
-    nonlocal_jitter = prompt("Jitter in seconds (+/-) (float)", str(JITTER))
+    # Headless / flag-driven execution
+    print_banner()
     try:
-        DELAY_SECONDS = float(nonlocal_delay)
-        JITTER = float(nonlocal_jitter)
-    except Exception:
-        print("Invalid delay/jitter values — using defaults.")
-
-    # Authenticate
-    try:
-        creds = load_or_create_credentials(credentials_path, token_path)
+        youtube = get_authenticated_service(args.credentials, args.token)
     except Exception as e:
-        print(Fore.RED + f"Authentication failed: {e}")
-        return
+        logger.error("Authentication failed: %s", e)
+        sys.exit(1)
 
-    youtube = build_youtube_service(creds)
-    print(Fore.CYAN + "Authenticated. Running actions: " + ", ".join(chosen))
+    if args.action == "like":
+        if not args.file:
+            logger.error("--file is required when running the 'like' action.")
+            sys.exit(1)
+        run_likes(youtube, args.file, args.delay, args.jitter, args.log_csv)
 
-    # Load processed sets
-    processed_like = load_processed("like")
-    processed_subscribe = load_processed("subscribe")
-    processed_comment = load_processed("comment")
+    elif args.action == "subscribe":
+        if not args.file:
+            logger.error("--file is required when running the 'subscribe' action.")
+            sys.exit(1)
+        run_subscribes(youtube, args.file, args.delay, args.jitter, args.log_csv)
 
-    # Execute in chosen order
-    try:
-        if "like" in chosen:
-            if not likes_path:
-                logging.warning("No likes path provided — skipping likes.")
-            else:
-                run_likes(youtube, likes_path, processed_like)
-        if "subscribe" in chosen:
-            if not subs_path:
-                logging.warning("No subscribe path provided — skipping subscribes.")
-            else:
-                run_subscribes(youtube, subs_path, processed_subscribe)
-        if "comment" in chosen:
-            if not comments_path:
-                logging.warning("No comments path provided — skipping comments.")
-            else:
-                run_comments(youtube, comments_path, processed_comment)
-    except KeyboardInterrupt:
-        print(Fore.YELLOW + "\nInterrupted by user. Saving state...")
-    except Exception as e:
-        logging.exception("Unexpected error: %s", e)
-    finally:
-        save_processed("like", processed_like)
-        save_processed("subscribe", processed_subscribe)
-        save_processed("comment", processed_comment)
-        print(Fore.GREEN + "\nAll done. Log file: " + LOG_CSV)
-        print("Processed state saved in: " + PROCESSED_DIR)
+    elif args.action == "comment":
+        if not args.file or not args.video:
+            logger.error("Both --file and --video are required when running the 'comment' action.")
+            sys.exit(1)
+        run_comments(youtube, args.file, args.video, args.delay, args.jitter, args.log_csv)
+
+    elif args.action == "all":
+        logger.error("When using flags, please specify a single action ('like', 'comment', or 'subscribe').")
+        sys.exit(1)
+
+    logger.info("Task completed successfully.")
+
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(Fore.YELLOW + "\nExecution interrupted by user.")
+        sys.exit(0)

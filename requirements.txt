@@ -1,5 +1,4 @@
-# 🔰 YouTube Automation Suite - Requirements
-# Professional GUI Version && CLI Version Dependencies
+# YouTube Automation Suite - Dependencies
 
 # Core GUI Framework
 customtkinter>=5.2.0

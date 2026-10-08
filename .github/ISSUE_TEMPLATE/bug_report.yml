@@ -1,0 +1,58 @@
+name: "Bug Report"
+description: "Report an issue, error, or unexpected behavior."
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please verify that you have configured your `credentials.json` correctly and checked the [Project Wiki](https://github.com/HaseebKaloya/Youtube-Automation-Suite/wiki) before submitting.
+
+  - type: dropdown
+    id: interface
+    attributes:
+      label: "Affected Interface"
+      description: "Which interface did the issue occur in?"
+      options:
+        - "GUI (Desktop Application)"
+        - "CLI (Command-Line Interface)"
+        - "Both"
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: "Description of the Bug"
+      description: "A clear and concise explanation of what occurred."
+      placeholder: "When attempting to perform action..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: "Steps to Reproduce"
+      description: "How can this bug be reproduced?"
+      placeholder: |
+        1. Action selected: [like / comment / subscribe]
+        2. Input file provided: [...]
+        3. Observed error or unexpected behavior...
+    validations:
+      required: true
+
+  - type: textarea
+    id: trace
+    attributes:
+      label: "Error Output / Traceback"
+      description: "Paste relevant console traceback or log output (ensure no private client secrets are included)."
+      render: shell
+
+  - type: input
+    id: environment
+    attributes:
+      label: "System Environment"
+      description: "OS version and Python version."
+      placeholder: "Windows 11, Python 3.10.12"
+    validations:
+      required: true

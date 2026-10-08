@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "youtube-automation-suite"
+version = "1.0.0"
+description = "A desktop and CLI automation suite for YouTube interactions using YouTube Data API v3."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+    { name = "Haseeb Kaloya", email = "contact.haseebkaloya@gmail.com" }
+]
+keywords = ["youtube", "automation", "api", "gui", "cli", "customtkinter"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Utilities",
+]
+dependencies = [
+    "customtkinter>=5.2.0",
+    "google-auth>=2.17.0",
+    "google-auth-oauthlib>=1.0.0",
+    "google-api-python-client>=2.80.0",
+    "pillow>=10.0.0",
+    "requests>=2.28.0",
+    "urllib3>=1.26.0",
+    "colorama>=0.4.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/HaseebKaloya/Youtube-Automation-Suite"
+Wiki = "https://github.com/HaseebKaloya/Youtube-Automation-Suite/wiki"
+
+[project.scripts]
+youtube-automation-cli = "src.youtube_automation_cli:main"
+youtube-automation-gui = "src.youtube_automation_gui:main"

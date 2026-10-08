@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Professional GUI Version - YouTube Automation Tool
-A modern automation suite for YouTube channel management
+YouTube Automation Suite - Graphical Interface
+Desktop application for managing bulk YouTube interactions.
 
-Author: Haseeb Kaloya
-Email: haseebkaloya@gmail.com
-Contact: +92 3294163702
+Developer: Haseeb Kaloya
+Email: contact.haseebkaloya@gmail.com
+License: MIT
 """
 import os
 import sys
@@ -17,10 +17,15 @@ import threading
 import logging
 import re
 import shutil
-import itertools
 from pathlib import Path
 from typing import List, Optional, Set
 import webbrowser
+
+try:
+    from PIL import Image
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
 
 import customtkinter as ctk
 from tkinter import filedialog, messagebox, scrolledtext
@@ -51,7 +56,7 @@ class YouTubeAutomationGUI(ctk.CTk):
     def __init__(self):
         super().__init__()
         
-        self.title("🔰 YouTube Automation Suite - Professional Tool")
+        self.title("YouTube Automation Suite")
         
         # Get screen dimensions and set appropriate window size
         screen_width = self.winfo_screenwidth()
@@ -125,25 +130,25 @@ class YouTubeAutomationGUI(ctk.CTk):
         sidebar.grid(row=0, column=0, sticky="nsew")
         sidebar.grid_rowconfigure(8, weight=1)
         
-        # Branding with hacker style
+        # Branding
         brand_frame = ctk.CTkFrame(sidebar, fg_color="transparent")
         brand_frame.grid(row=0, column=0, padx=20, pady=20, sticky="ew")
         
         brand_label = ctk.CTkLabel(
             brand_frame, 
-            text="🔰 YT Automation",
-            font=ctk.CTkFont(size=20, weight="bold"),
-            text_color="#00FF88"
+            text="YouTube Automation",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color="#FFFFFF"
         )
         brand_label.pack()
         
         tagline_label = ctk.CTkLabel(
             brand_frame,
-            text="Think Secure. Act Smart.",
-            font=ctk.CTkFont(size=12),
-            text_color="#0088FF"
+            text="Channel & Video Management",
+            font=ctk.CTkFont(size=11),
+            text_color="#888888"
         )
-        tagline_label.pack(pady=(5, 0))
+        tagline_label.pack(pady=(3, 0))
         
         # Action selection
         actions_frame = ctk.CTkFrame(sidebar, fg_color="transparent")
@@ -279,8 +284,16 @@ class YouTubeAutomationGUI(ctk.CTk):
             quick_frame,
             text="⚙️ Settings",
             command=self.open_settings,
-            fg_color="#444444",
-            hover_color="#666666"
+            fg_color="#333333",
+            hover_color="#444444"
+        ).pack(fill="x", pady=2)
+
+        ctk.CTkButton(
+            quick_frame,
+            text="👤 About Developer",
+            command=self.open_about,
+            fg_color="#333333",
+            hover_color="#444444"
         ).pack(fill="x", pady=2)
     
     def create_main_content(self):
@@ -426,39 +439,59 @@ class YouTubeAutomationGUI(ctk.CTk):
             self.update_status("Channels file loaded")
     
     def open_settings(self):
-        """Open settings dialog - FIXED METHOD"""
+        """Open settings dialog"""
         try:
             settings = SettingsDialog(self)
             self.wait_window(settings)
         except Exception as e:
             messagebox.showerror("Error", f"Could not open settings: {e}")
+
+    def open_about(self):
+        """Open About Developer dialog"""
+        try:
+            about = AboutDialog(self)
+            self.wait_window(about)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open about dialog: {e}")
     
     def update_progress(self, value, text=None):
-        """Update progress bar and label"""
+        """Update progress bar and label (thread-safe)"""
+        self.after(0, lambda: self._apply_progress(value, text))
+
+    def _apply_progress(self, value, text=None):
         self.progress_bar.set(value)
         if text:
             self.progress_label.configure(text=text)
     
     def update_status(self, message):
-        """Update status bar"""
-        self.status_label.configure(text=f"🔰 YouTube Automation - {message}")
+        """Update status bar (thread-safe)"""
+        self.after(0, lambda: self._apply_status(message))
+
+    def _apply_status(self, message):
+        self.status_label.configure(text=f"YouTube Automation - {message}")
         self.log_message(f"STATUS: {message}")
     
     def update_action(self, action):
-        """Update current action display"""
+        """Update current action display (thread-safe)"""
+        self.after(0, lambda: self._apply_action(action))
+
+    def _apply_action(self, action):
         self.current_action = action
         if action:
-            self.action_display.configure(text=f"🔄 {action}", text_color="#00FF88")
-            self.connection_status.configure(text="🟢 Connected", text_color="#00FF88")
+            self.action_display.configure(text=f"Running: {action}", text_color="#00FF88")
+            self.connection_status.configure(text="Connected", text_color="#00FF88")
         else:
             self.action_display.configure(text="No active action", text_color="#888888")
-            self.connection_status.configure(text="🔴 Disconnected", text_color="#FF4444")
+            self.connection_status.configure(text="Idle", text_color="#AAAAAA")
     
     def update_stats(self):
-        """Update statistics display"""
-        self.likes_stats.configure(text=f"💖 Likes: {self.stats['likes']}")
-        self.comments_stats.configure(text=f"💬 Comments: {self.stats['comments']}")
-        self.subs_stats.configure(text=f"📢 Subscriptions: {self.stats['subscriptions']}")
+        """Update statistics display (thread-safe)"""
+        self.after(0, self._apply_stats)
+
+    def _apply_stats(self):
+        self.likes_stats.configure(text=f"Likes: {self.stats['likes']}")
+        self.comments_stats.configure(text=f"Comments: {self.stats['comments']}")
+        self.subs_stats.configure(text=f"Subscriptions: {self.stats['subscriptions']}")
     
     def log_message(self, message, level="info"):
         """Add message to log with timestamp"""
@@ -727,20 +760,15 @@ class YouTubeAutomationGUI(ctk.CTk):
         return resp
     
     def extract_video_id_from_url(self, s: str) -> Optional[str]:
-        """Extract video ID from URL"""
+        """Extract video ID from URL or bare ID"""
         if not s:
             return None
         s = s.strip()
         if re.fullmatch(r"[A-Za-z0-9_-]{11}", s):
             return s
-        m = re.search(r"(?:v=|/v/|youtu\.be/|/embed/)([A-Za-z0-9_-]{11})", s)
+        m = re.search(r"(?:v=|/v/|youtu\.be/|/embed/|/shorts/)([A-Za-z0-9_-]{11})", s)
         if m:
             return m.group(1)
-        if s.startswith("http"):
-            parts = s.rstrip("/").split("/")
-            candidate = parts[-1]
-            if re.fullmatch(r"[A-Za-z0-9_-]{11}", candidate):
-                return candidate
         return None
     
     def extract_channel_id_from_url(self, s: str) -> Optional[str]:
@@ -1112,18 +1140,79 @@ class SettingsDialog(ctk.CTkToplevel):
         except ValueError:
             messagebox.showerror("Error", "Please enter valid numbers for delay and jitter")
 
+
+class AboutDialog(ctk.CTkToplevel):
+    """About Developer modal dialog"""
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("About Developer")
+        self.geometry("380x430")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        self.setup_ui()
+
+    def setup_ui(self):
+        main_frame = ctk.CTkFrame(self, fg_color="transparent")
+        main_frame.pack(fill="both", expand=True, padx=20, pady=20)
+
+        # Locate avatar image
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        avatar_path = os.path.join(repo_root, "assets", "images", "developer_avatar.jpg")
+        if not os.path.exists(avatar_path):
+            avatar_path = os.path.join(repo_root, "assets", "images", "developer.jpg")
+
+        if PIL_AVAILABLE and os.path.exists(avatar_path):
+            try:
+                pil_img = Image.open(avatar_path)
+                ctk_img = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(100, 100))
+                img_label = ctk.CTkLabel(main_frame, image=ctk_img, text="")
+                img_label.pack(pady=(5, 10))
+            except Exception:
+                pass
+
+        ctk.CTkLabel(
+            main_frame,
+            text="Haseeb Kaloya",
+            font=ctk.CTkFont(size=18, weight="bold")
+        ).pack(pady=(0, 2))
+
+        ctk.CTkLabel(
+            main_frame,
+            text="Lead Developer & Creator",
+            font=ctk.CTkFont(size=12),
+            text_color="#888888"
+        ).pack(pady=(0, 15))
+
+        info_box = ctk.CTkFrame(main_frame, fg_color="#222222")
+        info_box.pack(fill="x", padx=10, pady=(0, 20))
+
+        ctk.CTkLabel(
+            info_box,
+            text="Email: contact.haseebkaloya@gmail.com\n\nYouTube Automation Suite v1.0.0\nMIT License",
+            font=ctk.CTkFont(size=11),
+            justify="center"
+        ).pack(padx=15, pady=12)
+
+        ctk.CTkButton(
+            main_frame,
+            text="Close",
+            command=self.destroy,
+            width=100
+        ).pack(pady=(5, 0))
+
+
 def ensure_dir(path):
     """Ensure directory exists"""
     os.makedirs(path, exist_ok=True)
+
 
 def main():
     """Main application entry point"""
     try:
         app = YouTubeAutomationGUI()
-        app.log_message("🔰 YouTube Automation Suite Started", "success")
-        app.log_message("💡 Professional YouTube Management Tool", "info")
-        app.log_message("⚠️  IMPORTANT: Use responsibly - only operate on accounts you control", "warning")
-        app.log_message("📝 Select your input files and actions to begin", "info")
+        app.log_message("YouTube Automation Suite Initialized", "success")
+        app.log_message("Select your input files and actions to begin.", "info")
         app.mainloop()
     except Exception as e:
         messagebox.showerror("Fatal Error", f"Failed to start application: {e}")

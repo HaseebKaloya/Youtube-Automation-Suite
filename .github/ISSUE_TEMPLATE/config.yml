@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: "Project Wiki & Setup Guides"
+    url: "https://github.com/HaseebKaloya/Youtube-Automation-Suite/wiki"
+    about: "Read setup instructions, Google Cloud credentials configuration, and troubleshooting."
+  - name: "Direct Contact"
+    url: "mailto:contact.haseebkaloya@gmail.com"
+    about: "Contact Haseeb Kaloya for private questions, feedback, or security reports."
